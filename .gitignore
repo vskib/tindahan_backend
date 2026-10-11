@@ -1,0 +1,22 @@
+# Secrets and local config -- never commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Backups and exports (may contain customer/business data)
+*.dump
+*.sql.gz
+*.sql.enc
+backups/
+
+# Dependencies and build output
+node_modules/
+dist/
+build/
+coverage/
+
+# Misc
+.DS_Store
+*.log

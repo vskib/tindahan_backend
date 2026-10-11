@@ -1,0 +1,28 @@
+{
+  "name": "tindahan-pos-backend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "test:db": "node tests/db/setup.js && node --test --test-concurrency=1 \"tests/db/*.test.js\"",
+    "test:api": "node tests/db/setup.js && node --test --test-concurrency=1 \"tests/api/*.test.js\"",
+    "test": "npm run test:db && npm run test:api"
+  },
+  "devDependencies": {
+    "pg": "^8.23.1",
+    "supertest": "^7.3.1"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.117.3",
+    "cors": "^2.8.6",
+    "dotenv": "^18.0.6",
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.7.1",
+    "helmet": "^8.3.0",
+    "zod": "^4.6.5"
+  }
+}
