@@ -39,6 +39,7 @@ export const productListQuery = z.object({
   search: z.string().trim().max(100).optional(),
   status: z.enum(['active', 'archived', 'all']).default('active'),
 });
+export const barcodeLookupQuery = z.object({ barcode: z.string().trim().min(1).max(64) });
 export const movementsQuery = z.object({ ...pageQuery, productId: id.optional() });
 export const salesQuery = z.object({ ...pageQuery, from: ymd.optional(), to: ymd.optional() });
 export const rangeQuery = z.object({ from: ymd, to: ymd });

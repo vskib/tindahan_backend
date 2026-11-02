@@ -130,6 +130,22 @@ describe('search and pagination', () => {
   });
 });
 
+describe('barcode lookup', () => {
+  it('finds exact barcodes without exposing archived products or cashier cost data', async () => {
+    const barcode = `${tag}_CAM/1+`;
+    const product = (await create({ name: `${tag} Camera scan`, barcode })).body.data;
+    const path = `/api/products/by-barcode?barcode=${encodeURIComponent(barcode)}`;
+    const found = await a.as(cashier).get(path);
+    assert.equal(found.status, 200);
+    assert.equal(found.body.data.id, product.id);
+    assert.equal(found.body.data.barcode, barcode);
+    assert.equal('cost_centavos' in found.body.data, false);
+
+    assert.equal((await a.as(owner).post(`/api/products/${product.id}/archive`)).status, 200);
+    assert.equal((await a.as(cashier).get(path)).status, 404);
+  });
+});
+
 describe('stock adjustments and low-stock', () => {
   let p;
   before(async () => { p = (await create({ name: `${tag} Stock`, initial_stock: 4, low_stock_threshold: 5 })).body.data; });

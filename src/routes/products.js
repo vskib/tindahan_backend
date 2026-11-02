@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { AppError, unwrap } from '../errors.js';
 import { paged } from '../paging.js';
 import {
-  validate, idParam, productListQuery, movementsQuery, productCreate, productUpdate, stockAdjustment,
+  validate, idParam, productListQuery, barcodeLookupQuery, movementsQuery, productCreate, productUpdate, stockAdjustment,
 } from '../validation.js';
 
 const PRODUCT_COLS = 'id, name, barcode, price_centavos, stock_qty, low_stock_threshold, is_active, created_at, updated_at';
@@ -36,6 +36,13 @@ export function productRoutes({ db, mw }) {
     };
     const { data, total } = await paged(build, page, pageSize);
     res.json({ data: owner ? await withCosts(data) : data, page, pageSize, total });
+  });
+
+  r.get('/products/by-barcode', requireAuth, validate({ query: barcodeLookupQuery }), async (req, res) => {
+    const row = unwrap(await db.from('products').select(PRODUCT_COLS)
+      .eq('barcode', req.valid.query.barcode).eq('is_active', true).maybeSingle());
+    if (!row) throw new AppError(404, 'NOT_FOUND', 'No active product has that barcode.');
+    res.json({ data: req.user.role === 'owner' ? (await withCosts([row]))[0] : row });
   });
 
   r.get('/products/:id', requireAuth, validate({ params: idParam }), async (req, res) => {
