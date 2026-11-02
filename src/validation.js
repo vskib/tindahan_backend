@@ -42,6 +42,7 @@ export const productListQuery = z.object({
 export const movementsQuery = z.object({ ...pageQuery, productId: id.optional() });
 export const salesQuery = z.object({ ...pageQuery, from: ymd.optional(), to: ymd.optional() });
 export const rangeQuery = z.object({ from: ymd, to: ymd });
+export const periodSalesQuery = z.object({ from: ymd, to: ymd, period: z.enum(['week', 'month']) });
 
 export const productCreate = z.strictObject({
   name,

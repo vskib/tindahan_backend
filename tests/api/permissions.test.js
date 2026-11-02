@@ -38,7 +38,8 @@ describe('owner-only endpoints', () => {
       const r = await send(a.request[m](path), body);
       assert.equal(r.status, 401, `${m} ${path}`);
     }
-    for (const [m, path] of [['get', '/api/products'], ['get', '/api/sales'], ['post', '/api/checkout'], ['get', `/api/sales/${uuid()}`]]) {
+    for (const [m, path] of [['get', '/api/products'], ['get', '/api/sales'], ['post', '/api/checkout'],
+      ['get', `/api/sales/${uuid()}`], ['get', '/api/reports/period-sales?from=2030-01-01&to=2030-01-02&period=week']]) {
       assert.equal((await a.request[m](path)).status, 401, path);
     }
   });
@@ -111,6 +112,21 @@ describe('sales visibility', () => {
   it('the owner sees every sale', async () => {
     assert.equal((await a.as(owner).get(`/api/sales/${saleA}`)).status, 200);
     assert.ok((await a.as(owner).get('/api/sales')).body.data.some((s) => s.id === saleA));
+  });
+
+  it('weekly and monthly reports are available to both roles and cashier totals are scoped to their sales', async () => {
+    const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Manila' }).format(new Date());
+    for (const period of ['week', 'month']) {
+      const path = `/api/reports/period-sales?from=${today}&to=${today}&period=${period}`;
+      const own = await a.as(cashier).get(path);
+      const all = await a.as(owner).get(path);
+      assert.equal(own.status, 200);
+      assert.equal(all.status, 200);
+      assert.equal(own.body.data.reduce((sum, row) => sum + row.txn_count, 0), 1);
+      assert.ok(all.body.data.reduce((sum, row) => sum + row.txn_count, 0) >= 1);
+      assert.equal((await a.as(cashier2).get(path)).body.data.length, 0);
+    }
+    assert.equal((await a.as(cashier).get('/api/reports/period-sales?from=2030-01-02&to=2030-01-01&period=week')).status, 400);
   });
 
   it('there is no API to edit or delete a sale', async () => {

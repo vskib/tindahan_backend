@@ -1,12 +1,19 @@
 import { Router } from 'express';
 import { AppError, fromDbError, unwrap } from '../errors.js';
 import { paged } from '../paging.js';
-import { validate, idParam, keyParam, checkoutBody, salesQuery, rangeQuery } from '../validation.js';
+import { validate, idParam, keyParam, checkoutBody, salesQuery, rangeQuery, periodSalesQuery } from '../validation.js';
 
 const SALE_COLS = 'id, txn_no, created_at, total_centavos, cash_received_centavos, change_centavos, cashier:profiles(full_name)';
 const addDays = (ymd, n) => new Date(Date.parse(`${ymd}T00:00:00Z`) + n * 86_400_000).toISOString().slice(0, 10);
 // Business days are Philippine local days (UTC+8, no DST).
 const dayStart = (ymd) => `${ymd}T00:00:00+08:00`;
+const manilaDate = (iso) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Manila' }).format(new Date(iso));
+const periodStart = (ymd, period) => {
+  if (period === 'month') return `${ymd.slice(0, 7)}-01`;
+  const date = new Date(`${ymd}T00:00:00Z`);
+  const mondayOffset = (date.getUTCDay() + 6) % 7;
+  return addDays(ymd, -mondayOffset);
+};
 
 export function salesRoutes({ db, mw, config, logger }) {
   const r = Router();
@@ -73,6 +80,32 @@ export function salesRoutes({ db, mw, config, logger }) {
     const { from, to } = req.valid.query;
     const rows = unwrap(await db.rpc('daily_sales_summary', { p_actor: req.user.id, p_from: from, p_to: to }));
     res.json({ data: rows });
+  });
+
+  r.get('/reports/period-sales', requireAuth, validate({ query: periodSalesQuery }), async (req, res) => {
+    const { from, to, period } = req.valid.query;
+    if (to < from) throw new AppError(400, 'INVALID_DATE_RANGE', 'The end date is before the start date.');
+
+    const totals = new Map();
+    const pageSize = 100;
+    for (let offset = 0; ; offset += pageSize) {
+      let query = db.from('sales').select('created_at, total_centavos')
+        .gte('created_at', dayStart(from)).lt('created_at', dayStart(addDays(to, 1)));
+      if (req.user.role !== 'owner') query = query.eq('cashier_id', req.user.id);
+      const data = unwrap(await query.order('created_at').order('id').range(offset, offset + pageSize - 1));
+      for (const sale of data) {
+        const bucket = periodStart(manilaDate(sale.created_at), period);
+        const total = totals.get(bucket) ?? { txn_count: 0, total_centavos: 0 };
+        total.txn_count += 1;
+        total.total_centavos += Number(sale.total_centavos);
+        totals.set(bucket, total);
+      }
+      if (data.length < pageSize) break;
+    }
+
+    const data = [...totals].sort(([a], [b]) => a.localeCompare(b))
+      .map(([period_start, total]) => ({ period_start, ...total }));
+    res.json({ data });
   });
 
   return r;
