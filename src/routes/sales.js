@@ -89,29 +89,101 @@ export function salesRoutes({ db, mw, config, logger }) {
     const totals = new Map();
     const pageSize = 100;
     for (let offset = 0; ; offset += pageSize) {
-      let query = db.from('sales').select('created_at, total_centavos, sale_items(qty)')
+      let query = db.from('sales').select('id, created_at, total_centavos')
         .gte('created_at', dayStart(from)).lt('created_at', dayStart(addDays(to, 1)));
       if (req.user.role !== 'owner') query = query.eq('cashier_id', req.user.id);
-      const data = unwrap(await query.order('created_at').order('id').range(offset, offset + pageSize - 1));
-      for (const sale of data) {
+      const sales = unwrap(await query.order('created_at').order('id').range(offset, offset + pageSize - 1));
+      if (sales.length === 0) break;
+
+      const saleIds = sales.map((sale) => sale.id);
+      const saleItems = saleIds.length
+        ? unwrap(await db.from('sale_items').select('sale_id, product_id, qty').in('sale_id', saleIds))
+        : [];
+      const productCosts = saleItems.length
+        ? unwrap(await db.from('product_costs').select('product_id, cost_centavos')
+          .in('product_id', [...new Set(saleItems.map((item) => item.product_id))]))
+        : [];
+      const productCostMap = new Map(productCosts.map((row) => [row.product_id, Number(row.cost_centavos || 0)]));
+      const itemQtyBySale = new Map();
+      const saleCostBySale = new Map();
+      for (const item of saleItems) {
+        const qty = Number(item.qty || 0);
+        itemQtyBySale.set(item.sale_id, (itemQtyBySale.get(item.sale_id) ?? 0) + qty);
+        const cost = productCostMap.get(item.product_id) ?? 0;
+        saleCostBySale.set(item.sale_id, (saleCostBySale.get(item.sale_id) ?? 0) + qty * cost);
+      }
+
+      for (const sale of sales) {
         const bucket = periodStart(manilaDate(sale.created_at), period);
-        const qtySold = (sale.sale_items ?? []).reduce((sum, item) => sum + Number(item.qty || 0), 0);
-        const total = totals.get(bucket) ?? { txn_count: 0, total_centavos: 0, qty_sold: 0 };
+        const qtySold = itemQtyBySale.get(sale.id) ?? 0;
+        const saleCost = saleCostBySale.get(sale.id) ?? 0;
+        const profit = Number(sale.total_centavos) - saleCost;
+        const total = totals.get(bucket) ?? { txn_count: 0, total_centavos: 0, qty_sold: 0, profit_centavos: 0 };
         total.txn_count += 1;
         total.total_centavos += Number(sale.total_centavos);
         total.qty_sold += qtySold;
+        total.profit_centavos += profit;
         totals.set(bucket, total);
       }
-      if (data.length < pageSize) break;
+      if (sales.length < pageSize) break;
     }
 
     const data = [...totals].sort(([a], [b]) => a.localeCompare(b))
       .map(([period_start, total]) => ({ period_start, ...total }));
-    const inventory_left = req.user.role === 'owner'
-      ? unwrap(await db.from('products').select('stock_qty'))
-        .reduce((sum, p) => sum + Number(p.stock_qty || 0), 0)
-      : null;
-    res.json({ data, inventory_left });
+    let inventory = null;
+    if (req.user.role === 'owner') {
+      const inventoryPageSize = 1000;
+      const products = [];
+      for (let offset = 0; ; offset += inventoryPageSize) {
+        const page = unwrap(await db.from('products')
+          .select('id, name, stock_qty, is_active')
+          .order('name').order('id')
+          .range(offset, offset + inventoryPageSize - 1));
+        products.push(...page);
+        if (page.length < inventoryPageSize) break;
+      }
+
+      const endBoundary = dayStart(addDays(to, 1));
+      const endBoundaryMs = Date.parse(endBoundary);
+      const movementsByProduct = new Map();
+      for (let offset = 0; ; offset += inventoryPageSize) {
+        const page = unwrap(await db.from('inventory_movements')
+          .select('product_id, delta, created_at')
+          .gte('created_at', dayStart(from))
+          .order('created_at').order('id')
+          .range(offset, offset + inventoryPageSize - 1));
+        for (const movement of page) {
+          const totals = movementsByProduct.get(movement.product_id) ?? { since_start: 0, since_end: 0 };
+          const delta = Number(movement.delta);
+          totals.since_start += delta;
+          if (Date.parse(movement.created_at) >= endBoundaryMs) totals.since_end += delta;
+          movementsByProduct.set(movement.product_id, totals);
+        }
+        if (page.length < inventoryPageSize) break;
+      }
+
+      const inventoryProducts = products.map((product) => {
+        const current_qty = Number(product.stock_qty);
+        const movements = movementsByProduct.get(product.id) ?? { since_start: 0, since_end: 0 };
+        return {
+          id: product.id,
+          name: product.name,
+          is_active: product.is_active,
+          starting_qty: current_qty - movements.since_start,
+          ending_qty: current_qty - movements.since_end,
+          current_qty,
+        };
+      });
+      inventory = {
+        starting_date: from,
+        ending_date: to,
+        starting_units: inventoryProducts.reduce((sum, product) => sum + product.starting_qty, 0),
+        ending_units: inventoryProducts.reduce((sum, product) => sum + product.ending_qty, 0),
+        current_units: inventoryProducts.reduce((sum, product) => sum + product.current_qty, 0),
+        products: inventoryProducts,
+      };
+    }
+    res.json({ data, inventory });
   });
 
   return r;
