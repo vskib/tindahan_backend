@@ -89,15 +89,17 @@ export function salesRoutes({ db, mw, config, logger }) {
     const totals = new Map();
     const pageSize = 100;
     for (let offset = 0; ; offset += pageSize) {
-      let query = db.from('sales').select('created_at, total_centavos')
+      let query = db.from('sales').select('created_at, total_centavos, sale_items(qty)')
         .gte('created_at', dayStart(from)).lt('created_at', dayStart(addDays(to, 1)));
       if (req.user.role !== 'owner') query = query.eq('cashier_id', req.user.id);
       const data = unwrap(await query.order('created_at').order('id').range(offset, offset + pageSize - 1));
       for (const sale of data) {
         const bucket = periodStart(manilaDate(sale.created_at), period);
-        const total = totals.get(bucket) ?? { txn_count: 0, total_centavos: 0 };
+        const qtySold = (sale.sale_items ?? []).reduce((sum, item) => sum + Number(item.qty || 0), 0);
+        const total = totals.get(bucket) ?? { txn_count: 0, total_centavos: 0, qty_sold: 0 };
         total.txn_count += 1;
         total.total_centavos += Number(sale.total_centavos);
+        total.qty_sold += qtySold;
         totals.set(bucket, total);
       }
       if (data.length < pageSize) break;
@@ -105,7 +107,11 @@ export function salesRoutes({ db, mw, config, logger }) {
 
     const data = [...totals].sort(([a], [b]) => a.localeCompare(b))
       .map(([period_start, total]) => ({ period_start, ...total }));
-    res.json({ data });
+    const inventory_left = req.user.role === 'owner'
+      ? unwrap(await db.from('products').select('stock_qty'))
+        .reduce((sum, p) => sum + Number(p.stock_qty || 0), 0)
+      : null;
+    res.json({ data, inventory_left });
   });
 
   return r;
