@@ -84,6 +84,7 @@ export function salesRoutes({ db, mw, config, logger }) {
 
   r.get('/reports/period-sales', requireAuth, validate({ query: periodSalesQuery }), async (req, res) => {
     const { from, to, period } = req.valid.query;
+    const owner = req.user.role === 'owner';
     if (to < from) throw new AppError(400, 'INVALID_DATE_RANGE', 'The end date is before the start date.');
 
     const totals = new Map();
@@ -99,37 +100,63 @@ export function salesRoutes({ db, mw, config, logger }) {
       const saleItems = saleIds.length
         ? unwrap(await db.from('sale_items').select('sale_id, product_id, qty').in('sale_id', saleIds))
         : [];
-      const productCosts = saleItems.length
+      // Cost data is private to owners. Cashiers may see their own sales summary,
+      // but their response must never include cost-derived margin information.
+      const productCosts = owner && saleItems.length
         ? unwrap(await db.from('product_costs').select('product_id, cost_centavos')
           .in('product_id', [...new Set(saleItems.map((item) => item.product_id))]))
         : [];
       const productCostMap = new Map(productCosts.map((row) => [row.product_id, Number(row.cost_centavos || 0)]));
       const itemQtyBySale = new Map();
       const saleCostBySale = new Map();
+      const saleCostCompleteBySale = new Map(sales.map((sale) => [sale.id, true]));
       for (const item of saleItems) {
         const qty = Number(item.qty || 0);
         itemQtyBySale.set(item.sale_id, (itemQtyBySale.get(item.sale_id) ?? 0) + qty);
-        const cost = productCostMap.get(item.product_id) ?? 0;
-        saleCostBySale.set(item.sale_id, (saleCostBySale.get(item.sale_id) ?? 0) + qty * cost);
+        if (owner) {
+          const cost = productCostMap.get(item.product_id);
+          // A zero cost is how the product form records an unknown cost.
+          if (cost == null || cost <= 0) saleCostCompleteBySale.set(item.sale_id, false);
+          else saleCostBySale.set(item.sale_id, (saleCostBySale.get(item.sale_id) ?? 0) + qty * cost);
+        }
       }
 
       for (const sale of sales) {
         const bucket = periodStart(manilaDate(sale.created_at), period);
         const qtySold = itemQtyBySale.get(sale.id) ?? 0;
-        const saleCost = saleCostBySale.get(sale.id) ?? 0;
-        const profit = Number(sale.total_centavos) - saleCost;
-        const total = totals.get(bucket) ?? { txn_count: 0, total_centavos: 0, qty_sold: 0, profit_centavos: 0 };
+        const costComplete = owner && saleCostCompleteBySale.get(sale.id) === true && qtySold > 0;
+        const estimatedGrossProfit = costComplete
+          ? Number(sale.total_centavos) - (saleCostBySale.get(sale.id) ?? 0)
+          : null;
+        const total = totals.get(bucket) ?? {
+          txn_count: 0, total_centavos: 0, qty_sold: 0,
+          estimated_gross_profit_centavos: 0, profit_complete: true,
+        };
         total.txn_count += 1;
         total.total_centavos += Number(sale.total_centavos);
         total.qty_sold += qtySold;
-        total.profit_centavos += profit;
+        if (owner) {
+          if (!costComplete) {
+            total.profit_complete = false;
+            total.estimated_gross_profit_centavos = null;
+          } else if (total.profit_complete) {
+            total.estimated_gross_profit_centavos += estimatedGrossProfit;
+          }
+        }
         totals.set(bucket, total);
       }
       if (sales.length < pageSize) break;
     }
 
     const data = [...totals].sort(([a], [b]) => a.localeCompare(b))
-      .map(([period_start, total]) => ({ period_start, ...total }));
+      .map(([period_start, total]) => {
+        const row = { period_start, txn_count: total.txn_count, total_centavos: total.total_centavos, qty_sold: total.qty_sold };
+        if (owner) {
+          row.estimated_gross_profit_centavos = total.estimated_gross_profit_centavos;
+          row.profit_complete = total.profit_complete;
+        }
+        return row;
+      });
     let inventory = null;
     if (req.user.role === 'owner') {
       const inventoryPageSize = 1000;
