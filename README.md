@@ -3,7 +3,7 @@
 ## Local setup
 
 1. Install Node.js 20 or newer.
-2. Copy `.env.example` to `.env` and set the Supabase project URL, service role key, and frontend origin.
+2. Set the Supabase project URL, service role key, and frontend origin in `.env`.
 3. Run `npm ci`, then `npm start`.
 
 The service role key has full database access. Keep it on the backend host, out of source control, browser variables, and support messages. Production frontend origins must use HTTPS and be listed exactly in `CORS_ORIGINS`.
